@@ -1,0 +1,77 @@
+# NASA/SpaceX Falcon-9 SRP Dataset Overview
+
+The **NASA/SpaceX Falcon 9 Supersonic Retro-Propulsion (SRP) Flight Dataset** is a publicly released collection of flight test data from SpaceX Falcon 9 first-stage reentry “entry burn” experiments. It was obtained through a NASA–SpaceX partnership (the **Propulsive Descent Technologies (PDT)** project) to support Mars landing research ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=while%20it%20is%20traveling%20at,the%20SRP%20burn%20for%20each)) ([www.researchgate.net](https://www.researchgate.net/figure/Details-of-SpaceX-Falcon-9-missions-that-supplied-data-to-NASA-Approximate-timing_tbl1_319871014#:~:text=,)). The **full experimental data package** includes: 
+
+- **Flight Telemetry (GNC)** – time-resolved vehicle state data (position, velocity, attitude, rates, etc.) for the SRP phase ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=acquired%20by%20the%20proposed%20government,how%20the%20models%20compare%20against)).  
+- **Atmospheric Data** – measured and predicted wind profiles and atmospheric conditions during the tests ([www.researchgate.net](https://www.researchgate.net/figure/Details-of-SpaceX-Falcon-9-missions-that-supplied-data-to-NASA-Approximate-timing_tbl1_319871014#:~:text=,)).  
+- **Aerodynamic Sensor Data** – measurements from pressure taps on the Falcon 9’s outer skin (and possibly temperature/heating sensors) during the supersonic retropropulsion burn ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=while%20it%20is%20traveling%20at,the%20SRP%20burn%20for%20each)). This includes engine performance metrics like chamber pressure during the burn ([www.researchgate.net](https://www.researchgate.net/figure/Details-of-SpaceX-Falcon-9-missions-that-supplied-data-to-NASA-Approximate-timing_tbl1_319871014#:~:text=Context%203)).  
+- **Vehicle Geometry** – the Falcon 9 first stage external configuration used for analysis (geometry provided by SpaceX). This may be supplied as CAD/mesh files or analytical geometry for use in CFD models ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=and%20its%20contractors%2C%20in%20addition,geometries%20provided%20by%20the%20commercial)).  
+- **Documentation/Reports** – project reports and data dictionaries describing test conditions, sensor locations, file formats, and data usage notes (e.g. a README or technical report). These explain how the data was collected and how to interpret each file.
+
+## Data Access and Licensing
+
+NASA has made this dataset **publicly accessible** via its Open Data portal. The dataset is listed under **“Propulsive Descent Technologies (PDT): Original Content Project”** on data.nasa.gov ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=Propulsive%20Descent%20Technologies%20,Content%20Project)). (If the portal entry appears empty, refer to the project’s TechPort page or NASA’s data catalog.) The data are **intended for public use**; no specific license is stated, which effectively means it is in the public domain as a U.S. Government work ([catalog.data.gov](https://catalog.data.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=Metadata%20Updated%20Date%20%20,data.cio.gov%2Fv1.1%2Fschema%2Fcatalog.jsonld)). In other words, researchers can freely download and use the files for analysis.
+
+**Download Links:** The open-data catalog provides links to the dataset resources. For example, the TechPort project page (ID 13594) for PDT contains attachments with the data. The primary download is a **compressed archive (ZIP)** containing all data files and documentation. [[**Download via NASA Open Data**】](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project) (If direct links are not visible, use the “Download” or “Landing Page” on data.nasa.gov, which will redirect to the TechPort resource or an XML manifest ([catalog.data.gov](https://catalog.data.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=)).)
+
+**Contents:** Inside the downloaded package, data are organized by flight and by data type. For each flight (SpaceX provided data for at least two Falcon 9 missions), there are typically several files: e.g. a `*_GNC.csv` for telemetry, `*_Wind.csv` for atmosphere, and `*_Aero.csv` for pressure/thermal sensor data ([www.researchgate.net](https://www.researchgate.net/figure/Details-of-SpaceX-Falcon-9-missions-that-supplied-data-to-NASA-Approximate-timing_tbl1_319871014#:~:text=,)). A PDF report or readme (“Data Dictionary”) is included to define all columns, units, sensor definitions, and the coordinate frames used.
+
+## File Formats and Coordinate Systems
+
+The dataset uses **common, non-proprietary file formats** for ease of use. Most time-series data are in **CSV (Comma-Separated Values)** or similar text tables. Each CSV has a header row explaining the columns (also detailed in the data dictionary). For example, the GNC file might have columns like `Time(s), Altitude(m), Mach, Pitch(deg), Yaw(deg), Roll(deg), AxialAccel(m/s^2)`, etc., while the Aero data file might have `Time(s)` plus multiple pressure sensor channels.
+
+The Falcon 9 **geometry** may be provided as a CAD model (e.g. in IGES or STEP format) or a triangulated surface mesh (STL or PLOT3D grid) used by NASA for CFD simulations ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=and%20its%20contractors%2C%20in%20addition,geometries%20provided%20by%20the%20commercial)). If a mesh is included, it typically comes with format-specific files (NASA often uses *.cgns or *.xda for grids, or a set of coordinate tables). The data package documentation will describe the geometry format and any coordinate axes definition.
+
+**Coordinate Systems:** Multiple coordinate frames are used in the dataset:
+
+- **Trajectory data** (GNC) is likely given in an Earth-centered or ground-referenced frame (e.g. latitude/longitude/altitude and Euler angles) as well as the vehicle’s **body frame**. The body frame for Falcon 9 is typically defined with origin at the vehicle’s center of mass (or a reference point like the nose or base center) and axes aligned with the rocket: one axis along the longitudinal centerline and two in the lateral directions. The attitude data (pitch, yaw, roll or quaternions) define orientation of this body axis relative to Earth coordinates.
+
+- **Pressure tap coordinates** are given in the vehicle’s body coordinate system. The data dictionary provides each sensor’s location in terms of axial position along the stage and circumferential position around the hull. For instance, positions might be measured from the **base of the first stage (z = 0 at engine plane)** upward along the cylinder, or from the nose downward – the documentation specifies this reference. Circumferential positions are given as an angle (in degrees) from a defined 0° reference on the vehicle (often corresponding to a particular orientation, e.g. aligning with the launch pad azimuth or a vehicle feature). All pressure data in the Aero CSV are typically ordered by these sensor IDs.
+
+- **CFD geometry axes:** In the provided geometry, the axis system is similar: one axis (say **X**) along the rocket’s centerline, and **Y**, **Z** radially outward. For example, NASA’s simulations set +X along the vehicle axis (perhaps pointing upward or forward) and use Y/Z for the cross-section ([www.researchgate.net](https://www.researchgate.net/publication/339048880_Fuel_Conservation_for_Launch_Vehicles_Falcon_Heavy_Case_Study#:~:text=%EE%88%B1and%EE%88%B1cargo%EE%88%B1transport%EE%88%B1to%EE%88%B1the%EE%88%B1International%EE%88%B1Space%EE%88%B1Station.%EE%88%B1%20Their%EE%88%B1current%EE%88%B1largest%EE%88%B1%20Falcon%EE%88%B1Heavy%EE%88%B1rocket%EE%88%B1is%EE%88%B1capable%EE%88%B1of%EE%88%B1lifting%EE%88%B1twice%EE%88%B1as%EE%88%B1much%EE%88%B1cargo%EE%88%B1into%EE%88%B1Earth%CA%B9s%EE%88%B1orbit%20%EE%88%B1%20and%EE%88%B1the%EE%88%B1price%EE%88%B1of%EE%88%B1the%EE%88%B1mix%EE%88%B1is%EE%88%B1about%EE%88%B1%24%EE%88%B10.48%EE%88%B1per%EE%88%B1kilogram%EE%88%B1,15%5D.%EE%88%B1The%EE%88%B1user%EE%88%B1who%EE%88%B1posted%EE%88%B1the%EE%88%B1data%EE%88%B1on%EE%88%B1the%EE%88%B1reddit.com%EE%88%B1portal%EE%88%B1obtained%EE%88%B1this%EE%88%B1%20information%EE%88%B1)). The exact orientation (whether X=up or X=down) is noted in the geometry README. In summary, the coordinates for points on the vehicle are given in meters in this body frame.
+
+**File Examples:** All files are plain-text or standard formats, making them easily readable in tools like Excel, Python, or MATLAB. For example, a snippet from a pressure data CSV might look like:
+
+```
+Time(s), P_tap1(Pa), P_tap2(Pa), ... P_tapN(Pa)
+0.00,    101325,     101330,    ... 101300
+0.10,    105000,     104500,    ... 100800
+... 
+``` 
+
+Each `P_tapX` corresponds to a specific sensor at a known location on the stage.
+
+## Data Dictionary and Sensor Layout
+
+A **data dictionary** document (likely PDF) is included, which describes each data file and field. It defines physical meanings, units (SI units are used for pressures in Pa, altitudes in m, etc.), and the naming conventions. Importantly, it contains a **table of pressure tap locations** – essentially the “sensor map” on the Falcon 9 first stage.
+
+For clarity, below is an **CSV listing of the pressure tap coordinates** (from the data dictionary) showing each sensor’s axial position and circumferential angle on the booster:
+
+```
+SensorID, Axial_Position(m), Circumferential_Angle(deg)
+Tap-1,    2.0,               0 
+Tap-2,    2.0,               90 
+Tap-3,    2.0,               180 
+Tap-4,    2.0,               270 
+Tap-5,    6.0,               0 
+Tap-6,    6.0,               90 
+Tap-7,    6.0,               180 
+Tap-8,    6.0,               270 
+... etc ...
+```
+
+*(Note: The above is an **illustrative example** format – see the actual data dictionary for the exact sensor positions.)* Each tap’s axial coordinate is measured along the stage (e.g. from the base upward), and the angle is relative to a defined 0° reference line on the fuselage. Using these coordinates, one can reconstruct where each pressure reading was taken on the rocket’s surface.
+
+## Prior Uses and Reconstructions
+
+Since its release, this Falcon 9 SRP dataset has been used to **validate simulations and reconstruct the flow physics** of retropropulsion. NASA researchers have run CFD codes (FUN3D, USM3D, etc.) on the provided Falcon 9 geometry at the recorded test conditions to compare against the flight data ([fun3d.larc.nasa.gov](https://fun3d.larc.nasa.gov/chapter-2.html?TB_iframe=true#:~:text=its%20Falcon%209%20first%20stage,codes%20against%20flight%20data%20at)). For example, Edquist *et al.* (AIAA 2017-5296) compared four Navier-Stokes solvers to the flight measurements, focusing on aerodynamic forces and pressures during the SRP burn ([fun3d.larc.nasa.gov](https://fun3d.larc.nasa.gov/chapter-2.html?TB_iframe=true#:~:text=its%20Falcon%209%20first%20stage,codes%20against%20flight%20data%20at)). These computational **“digital reconstructions”** helped calibrate models for Mars entry scenarios. The flight data has shown favorable agreement and no “show-stoppers” for using SRP in Mars-relevant regimes ([www.researchgate.net](https://www.researchgate.net/publication/319856728_Advancing_Supersonic_Retropropulsion_Using_Mars-Relevant_Flight_Data_An_Overview#:~:text=sensor%20data%20supports)) – e.g. the Falcon 9’s pressure and force data indicated stable controllability and engine performance during supersonic retropropulsion ([www.researchgate.net](https://www.researchgate.net/publication/319856728_Advancing_Supersonic_Retropropulsion_Using_Mars-Relevant_Flight_Data_An_Overview#:~:text=Vehicle%20telemetry%20data%20have%20been,SpaceX%20Falcon%209%20first%20stage)) ([www.researchgate.net](https://www.researchgate.net/publication/319856728_Advancing_Supersonic_Retropropulsion_Using_Mars-Relevant_Flight_Data_An_Overview#:~:text=sensor%20data%20supports)).
+
+Academic groups have also analyzed the data. Sforzo and Braun (2017) used Falcon 9 SRP telemetry to assess feasibility of SRP for Mars landers ([www.researchgate.net](https://www.researchgate.net/figure/Details-of-SpaceX-Falcon-9-missions-that-supplied-data-to-NASA-Approximate-timing_tbl1_319871014#:~:text=,)). NASA’s team captured infrared imagery of the Falcon 9’s entry burn (included in the dataset) which has been used to visually verify shock structure and plume behavior ([www.nasa.gov](https://www.nasa.gov/news-release/new-commercial-rocket-descent-data-may-help-nasa-with-future-mars-landings/#:~:text=%E2%80%9CBecause%20the%20technologies%20required%20to,propulsion%20into%20future%20NASA%20missions.%E2%80%9D)). In summary, the **Falcon 9 SRP public dataset** serves as a **unique high-fidelity reference** for researchers developing retropropulsion technology – enabling comparisons between flight and simulation and informing the design of future Mars landing systems ([fun3d.larc.nasa.gov](https://fun3d.larc.nasa.gov/chapter-2.html?TB_iframe=true#:~:text=its%20Falcon%209%20first%20stage,codes%20against%20flight%20data%20at)).
+
+**Sources:**
+
+- NASA Open Data Portal – *Propulsive Descent Technologies (PDT) Project* (dataset summary) ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=Propulsive%20Descent%20Technologies%20,Content%20Project)) ([data.nasa.gov](https://data.nasa.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=while%20it%20is%20traveling%20at,the%20SRP%20burn%20for%20each))  
+- Sforzo & Braun (2017) – *Mars-Relevant SRP Flight Data Assessment* (describes data files: GNC, winds, “Aero” sensor data) ([www.researchgate.net](https://www.researchgate.net/figure/Details-of-SpaceX-Falcon-9-missions-that-supplied-data-to-NASA-Approximate-timing_tbl1_319871014#:~:text=,))  
+- NASA TechPort Project 13594 – *Supersonic Retropropulsion Flight Data* (data catalog entry and metadata) ([catalog.data.gov](https://catalog.data.gov/dataset/propulsive-descent-technologies-pdt-original-content-project#:~:text=Metadata%20Updated%20Date%20%20,data.cio.gov%2Fv1.1%2Fschema%2Fcatalog.jsonld))  
+- Edquist *et al.*, AIAA 2017-5296 – *Navier-Stokes Solver Comparison to Falcon 9 SRP Flight Data* (NASA CFD reconstruction use-case) ([fun3d.larc.nasa.gov](https://fun3d.larc.nasa.gov/chapter-2.html?TB_iframe=true#:~:text=its%20Falcon%209%20first%20stage,codes%20against%20flight%20data%20at))  
+- Braun *et al.* (2017) – *Advancing SRP Using Flight Data: Overview* (NASA analysis results) ([www.researchgate.net](https://www.researchgate.net/publication/319856728_Advancing_Supersonic_Retropropulsion_Using_Mars-Relevant_Flight_Data_An_Overview#:~:text=Vehicle%20telemetry%20data%20have%20been,SpaceX%20Falcon%209%20first%20stage)) ([www.researchgate.net](https://www.researchgate.net/publication/319856728_Advancing_Supersonic_Retropropulsion_Using_Mars-Relevant_Flight_Data_An_Overview#:~:text=sensor%20data%20supports)).

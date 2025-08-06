@@ -1,22 +1,20 @@
-#!/usr/bin/env python3
 """
-Toy GAOT vs Baseline demo on Poisson's equation with a random circular hole.
+Toy GAOT vs Baseline demo on Poisson's equation with a random circular hole
+— DOLFINx edition.
 
-Usage
------
-$ python toy_gaot_poisson.py            # runs end-to-end demo
-$ python toy_gaot_poisson.py --help     # see configurable arguments
+This script:
 
-The script:
-1. Generates synthetic datasets on-the-fly with FEniCS (--num-samples, --points).
-2. Trains two models in JAX / Flax:
-     • BaselineMLP  - naive point-wise network
-     • ToyGAOT      - simplified geometry-aware operator transformer
+1. Generates synthetic datasets on-the-fly with *DOLFINx* + *Gmsh*
+   (arguments: ``--num-samples``, ``--points``).
+2. Trains two models in **JAX / Flax**:
+     - BaselineMLP  - naive point-wise network
+     - ToyGAOT      - simplified geometry-aware operator transformer
 3. Prints final relative L2 errors.
 
 Dependencies
 ------------
-pip install fenics-dolfin jax flax optax scikit-learn numpy tqdm
+conda install -c conda-forge fenics-dolfinx petsc petsc4py gmsh slepc slepc4py
+pip install jax flax optax scikit-learn numpy tqdm
 """
 
 import argparse
@@ -29,15 +27,64 @@ import optax
 from flax import linen as nn
 from flax.training import train_state
 from tqdm import trange
+from mpi4py import MPI
+from petsc4py import PETSc
+from dolfinx import fem, mesh
+import ufl
+import gmsh
 
-# -----------------------------------------------------------------------------#
-# 1.  Data generator (FEniCS)                                                  #
-# -----------------------------------------------------------------------------#
-try:
-    import dolfin as df  # classic FEniCS
-except ModuleNotFoundError as exc:
-    print("FEniCS/dolfin not found. Install with:\n  pip install fenics-dolfin")
-    raise SystemExit(1) from exc
+
+def _gmsh_square_with_hole(cx: float, cy: float, r: float, mesh_res: int) -> mesh.Mesh:
+    """
+    Build a unit square [0,1]² with a circular hole using Gmsh and
+    convert to a DOLFINx mesh.
+
+    The characteristic length is controlled by ``mesh_res``.
+    """
+    from dolfinx.io import gmshio
+
+    gmsh.initialize()
+    gmsh.model.add("unit_square_with_hole")
+
+    lc = 1.0 / mesh_res  # target element size
+
+    # Square points (counter-clockwise)
+    p0 = gmsh.model.geo.addPoint(0.0, 0.0, 0.0, lc)
+    p1 = gmsh.model.geo.addPoint(1.0, 0.0, 0.0, lc)
+    p2 = gmsh.model.geo.addPoint(1.0, 1.0, 0.0, lc)
+    p3 = gmsh.model.geo.addPoint(0.0, 1.0, 0.0, lc)
+
+    l0 = gmsh.model.geo.addLine(p0, p1)
+    l1 = gmsh.model.geo.addLine(p1, p2)
+    l2 = gmsh.model.geo.addLine(p2, p3)
+    l3 = gmsh.model.geo.addLine(p3, p0)
+    square = gmsh.model.geo.addCurveLoop([l0, l1, l2, l3])
+
+    # Circle - approximate with 64 straight segments (simpler than arcs)
+    n_circle = 64
+    circle_pts = []
+    circle_lines = []
+    prev_pt = None
+    for i in range(n_circle):
+        theta = 2 * np.pi * i / n_circle
+        x = cx + r * np.cos(theta)
+        y = cy + r * np.sin(theta)
+        pt = gmsh.model.geo.addPoint(float(x), float(y), 0.0, lc)
+        circle_pts.append(pt)
+        if prev_pt is not None:
+            line = gmsh.model.geo.addLine(prev_pt, pt)
+            circle_lines.append(line)
+        prev_pt = pt
+    circle_lines.append(gmsh.model.geo.addLine(circle_pts[-1], circle_pts[0]))
+    circle_loop = gmsh.model.geo.addCurveLoop(circle_lines)
+
+    gmsh.model.geo.addPlaneSurface([square, circle_loop])
+    gmsh.model.geo.synchronize()
+    gmsh.model.mesh.generate(2)
+
+    msh, *_ = gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, 0, gdim=2)
+    gmsh.finalize()
+    return msh
 
 
 def solve_poisson_with_hole(
@@ -48,69 +95,70 @@ def solve_poisson_with_hole(
     mesh_res: int = 32,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Solve -Δu = 1 on square [0,1]² with a circular hole Dirichlet BC.
+    Solve −Δu = 1 on the unit square with a circular hole.
 
-    Outer boundary: u = 0
-    Hole boundary : u = 1
+    Dirichlet BCs:
+      outer boundary → u = 0
+      hole boundary  → u = 1
 
-    Returns:
-        coords:  (num_points, 2)  float32
-        u_vals: (num_points, 1)  float32
+    Returns
+    -------
+    coords : (num_points, 2) float32
+    u_vals : (num_points, 1) float32
     """
-    # Build geometry
-    domain = df.Rectangle(df.Point(0.0, 0.0), df.Point(1.0, 1.0))
-    hole = df.Circle(df.Point(cx, cy), r)
-    geom = domain - hole
+    # ------------------------------------------------------------------ mesh
+    msh = _gmsh_square_with_hole(cx, cy, r, mesh_res)
 
-    mesh = df.generate_mesh(geom, mesh_res)
+    # ------------------------------------------------------------------ space
+    V = fem.functionspace(msh, ("Lagrange", 1))
 
-    # Local refine near hole for accuracy
-    cell_markers = df.MeshFunction("bool", mesh, mesh.topology().dim())
-    cell_markers.set_all(False)
-    for cell in df.cells(mesh):
-        p = cell.midpoint()
-        if (p.x() - cx) ** 2 + (p.y() - cy) ** 2 < (2 * r) ** 2:
-            cell_markers[cell] = True
-    mesh = df.refine(mesh, cell_markers)
+    # ---------------------------------------------------------------- equation
+    u = ufl.TrialFunction(V)
+    v = ufl.TestFunction(V)
+    f = fem.Constant(msh, PETSc.ScalarType(1.0))
 
-    V = df.FunctionSpace(mesh, "P", 1)
+    a = ufl.inner(ufl.grad(u), ufl.grad(v)) * ufl.dx
+    L = f * v * ufl.dx
 
-    # Boundary conditions
-    u_outer = df.Constant(0.0)
-
-    def outer_boundary(x, on_bnd):
-        return on_bnd and (
-            df.near(x[0], 0) or df.near(x[0], 1) or df.near(x[1], 0) or df.near(x[1], 1)
+    # ---------------------------------------------------------- Dirichlet BCs
+    def _outer(x):
+        return (
+            np.isclose(x[0], 0.0)
+            | np.isclose(x[0], 1.0)
+            | np.isclose(x[1], 0.0)
+            | np.isclose(x[1], 1.0)
         )
 
-    bc_outer = df.DirichletBC(V, u_outer, outer_boundary)
+    def _inner(x):
+        return (x[0] - cx) ** 2 + (x[1] - cy) ** 2 <= (r + 1e-6) ** 2
 
-    u_inner = df.Constant(1.0)
+    # outer square facets
+    facets_out = mesh.locate_entities_boundary(msh, msh.topology.dim - 1, _outer)
+    dofs_out = fem.locate_dofs_topological(V, msh.topology.dim - 1, facets_out)
+    bc_out = fem.dirichletbc(PETSc.ScalarType(0.0), dofs_out, V)
 
-    def inner_boundary(x, on_bnd):
-        return on_bnd and ((x[0] - cx) ** 2 + (x[1] - cy) ** 2 <= (r + 1e-3) ** 2)
+    # hole facets
+    facets_in = mesh.locate_entities_boundary(msh, msh.topology.dim - 1, _inner)
+    dofs_in = fem.locate_dofs_topological(V, msh.topology.dim - 1, facets_in)
+    bc_in = fem.dirichletbc(PETSc.ScalarType(1.0), dofs_in, V)
 
-    bc_inner = df.DirichletBC(V, u_inner, inner_boundary)
+    # ---------------------------------------------------------- linear solve
+    problem = fem.petsc.LinearProblem(
+        a,
+        L,
+        bcs=[bc_out, bc_in],
+        petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+    )
+    uh = problem.solve()
 
-    bcs = [bc_outer, bc_inner]
+    # ---------------------------------------------------------- sampling
+    coords = msh.geometry.x.copy().astype(np.float32)
+    vals = uh.x.array.real.astype(np.float32)
 
-    # Variational problem
-    u = df.TrialFunction(V)
-    v = df.TestFunction(V)
-    f = df.Constant(1.0)
-    a = df.dot(df.grad(u), df.grad(v)) * df.dx
-    L = f * v * df.dx
-
-    u_sol = df.Function(V)
-    df.solve(a == L, u_sol, bcs)
-
-    coords = mesh.coordinates().astype(np.float32)
-    vals = u_sol.compute_vertex_values(mesh).astype(np.float32)
-
-    # Sub-sample for fixed tensor size
     if len(coords) > num_points:
         idx = np.random.choice(len(coords), num_points, replace=False)
-        coords, vals = coords[idx], vals[idx]
+        coords = coords[idx]
+        vals = vals[idx]
 
     coords = jnp.asarray(coords)
     vals = jnp.asarray(vals)[:, None]
@@ -153,7 +201,7 @@ class MLP(nn.Module):
 
 
 class BaselineMLP(nn.Module):
-    """Naive point-wise model: input [x,y,cx,cy,r] → u"""
+    """Naive point-wise model: input [x, y, cx, cy, r] → u"""
 
     @nn.compact
     def __call__(self, coords, params):
@@ -226,20 +274,22 @@ def create_state(rng_key, model, lr, batch):
 
 
 @jax.jit
-def loss_fn(params, apply_fn, coords, params_geom, sols):
+def _loss_fn(params, apply_fn, coords, params_geom, sols):
     preds = apply_fn({"params": params}, coords, params_geom)
     return jnp.mean((preds - sols) ** 2)
 
 
 @jax.jit
-def train_step(state, coords, params_geom, sols):
-    val, grads = jax.value_and_grad(loss_fn)(
+def _train_step(state, coords, params_geom, sols):
+    val, grads = jax.value_and_grad(_loss_fn)(
         state.params, state.apply_fn, coords, params_geom, sols
     )
     return state.apply_gradients(grads=grads), val
 
 
-def train_model(name, model, data_train, data_test, epochs=200, lr=1e-3, batch_size=5):
+def train_model(
+    name, model, data_train, data_test, *, epochs=200, lr=1e-3, batch_size=5
+) -> float:
     print(f"\n== Training {name} ==")
     rng = jax.random.PRNGKey(0)
     state = create_state(rng, model, lr, data_train[:2] + ())
@@ -252,7 +302,7 @@ def train_model(name, model, data_train, data_test, epochs=200, lr=1e-3, batch_s
         perm = np.random.permutation(n_train)
         for i in range(0, n_train, batch_size):
             idx = perm[i : i + batch_size]
-            state, loss = train_step(
+            state, loss = _train_step(
                 state,
                 coords_tr[idx],
                 params_tr[idx],
@@ -261,7 +311,6 @@ def train_model(name, model, data_train, data_test, epochs=200, lr=1e-3, batch_s
         if ep % 50 == 0 or ep == 1:
             print(f"  epoch {ep:>3d}  loss {loss:.6f}")
 
-    # evaluation
     preds = state.apply_fn({"params": state.params}, coords_te, params_te)
     rel_l2 = jnp.linalg.norm(preds - sols_te) / jnp.linalg.norm(sols_te)
     print(f"  -> relative L2 error = {rel_l2:.4f}")
@@ -271,8 +320,8 @@ def train_model(name, model, data_train, data_test, epochs=200, lr=1e-3, batch_s
 # -----------------------------------------------------------------------------#
 # 4.  Main                                                                     #
 # -----------------------------------------------------------------------------#
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Toy GAOT demo")
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Toy GAOT demo (DOLFINx)")
     parser.add_argument("--num-samples", type=int, default=50)
     parser.add_argument("--points", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=200)

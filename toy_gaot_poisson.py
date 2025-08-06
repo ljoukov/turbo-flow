@@ -30,6 +30,7 @@ from tqdm import trange
 from mpi4py import MPI
 from petsc4py import PETSc
 from dolfinx import fem, mesh
+import dolfinx.fem.petsc as fem_petsc
 import ufl
 import gmsh
 
@@ -78,8 +79,11 @@ def _gmsh_square_with_hole(cx: float, cy: float, r: float, mesh_res: int) -> mes
     circle_lines.append(gmsh.model.geo.addLine(circle_pts[-1], circle_pts[0]))
     circle_loop = gmsh.model.geo.addCurveLoop(circle_lines)
 
-    gmsh.model.geo.addPlaneSurface([square, circle_loop])
+    surface = gmsh.model.geo.addPlaneSurface([square, circle_loop])
     gmsh.model.geo.synchronize()
+    # Tag the surface so DOLFINx can import it
+    pg = gmsh.model.addPhysicalGroup(2, [surface])
+    gmsh.model.setPhysicalName(2, pg, "domain")
     gmsh.model.mesh.generate(2)
 
     msh, *_ = gmshio.model_to_mesh(gmsh.model, MPI.COMM_WORLD, 0, gdim=2)
@@ -143,7 +147,7 @@ def solve_poisson_with_hole(
     bc_in = fem.dirichletbc(PETSc.ScalarType(1.0), dofs_in, V)
 
     # ---------------------------------------------------------- linear solve
-    problem = fem.petsc.LinearProblem(
+    problem = fem_petsc.LinearProblem(
         a,
         L,
         bcs=[bc_out, bc_in],
@@ -215,15 +219,19 @@ class SimpleEncoder(nn.Module):
 
     @nn.compact
     def __call__(self, latent_grid, coords, params):
-        from sklearn.neighbors import NearestNeighbors
+        # Pure JAX k-NN (avoids NumPy/Scikit-learn conversions that break under jit/vmap)
+        coords_xy = coords[..., :2]  # strip geometry parameters
+        dists = jnp.sum(
+            (latent_grid[:, None, :] - coords_xy[None, :, :]) ** 2, axis=-1
+        )  # (G,N)
+        idx = jnp.argsort(dists, axis=1)[:, : self.k]  # (G,k)
 
-        nbrs = NearestNeighbors(n_neighbors=self.k).fit(np.asarray(coords))
-        _, idx = nbrs.kneighbors(np.asarray(latent_grid))
-        neighbor_coords = coords[idx]
-        neighbor_params = params[idx]
+        neighbor_coords = coords_xy[idx]  # (G,k,2)
+        neighbor_params = params[idx]  # (G,k,3)
 
         mean_coords = jnp.mean(neighbor_coords, axis=1)
         mean_params = jnp.mean(neighbor_params, axis=1)
+
         enc_inp = jnp.concatenate([latent_grid, mean_coords, mean_params], axis=-1)
         return MLP((128, 128, self.latent_dim))(enc_inp)
 
@@ -233,11 +241,12 @@ class SimpleDecoder(nn.Module):
 
     @nn.compact
     def __call__(self, query, latent_grid, latent_tokens):
-        from sklearn.neighbors import NearestNeighbors
+        # Pure JAX k-NN (distance only in x,y space)
+        query_xy = query[..., :2]
+        dists = jnp.sum((query_xy[None, :] - latent_grid) ** 2, axis=-1)  # (G,)
+        idx = jnp.argsort(dists)[: self.k]  # (k,)
 
-        nbrs = NearestNeighbors(n_neighbors=self.k).fit(np.asarray(latent_grid))
-        _, idx = nbrs.kneighbors(np.asarray(query))
-        mean_tokens = jnp.mean(latent_tokens[idx], axis=1)
+        mean_tokens = jnp.mean(latent_tokens[idx], axis=0)
         dec_inp = jnp.concatenate([query, mean_tokens], axis=-1)
         return MLP((128, 128, 1))(dec_inp)
 
@@ -255,11 +264,14 @@ class ToyGAOT(nn.Module):
         encode = SimpleEncoder(self.latent_dim)
         decode = SimpleDecoder()
 
-        latent_tokens = jax.vmap(encode, in_axes=(None, 0, 0))(
+        # Map over latent_grid only; coords/params stay the same
+        latent_tokens = jax.vmap(encode, in_axes=(0, None, None))(
             latent_grid, coords, params
         )
         processed = MLP((self.latent_dim, self.latent_dim))(latent_tokens)
-        preds = jax.vmap(decode, in_axes=(0, None, 0))(coords, latent_grid, processed)
+        preds = jax.vmap(decode, in_axes=(0, None, None))(
+            coords, latent_grid, processed
+        )
         return preds
 
 
@@ -298,18 +310,23 @@ def train_model(
     coords_te, params_te, sols_te = data_test
 
     n_train = coords_tr.shape[0]
-    for ep in range(1, epochs + 1):
-        perm = np.random.permutation(n_train)
-        for i in range(0, n_train, batch_size):
-            idx = perm[i : i + batch_size]
-            state, loss = _train_step(
-                state,
-                coords_tr[idx],
-                params_tr[idx],
-                sols_tr[idx],
-            )
-        if ep % 50 == 0 or ep == 1:
-            print(f"  epoch {ep:>3d}  loss {loss:.6f}")
+
+    if n_train == 0:
+        print("  (no training samples, skipping optimisation)")
+    else:
+        loss = jnp.nan
+        for ep in range(1, epochs + 1):
+            perm = np.random.permutation(n_train)
+            for i in range(0, n_train, batch_size):
+                idx = perm[i : i + batch_size]
+                state, loss = _train_step(
+                    state,
+                    coords_tr[idx],
+                    params_tr[idx],
+                    sols_tr[idx],
+                )
+            if (ep % 50 == 0 or ep == 1) and not jnp.isnan(loss):
+                print(f"  epoch {ep:>3d}  loss {loss:.6f}")
 
     preds = state.apply_fn({"params": state.params}, coords_te, params_te)
     rel_l2 = jnp.linalg.norm(preds - sols_te) / jnp.linalg.norm(sols_te)

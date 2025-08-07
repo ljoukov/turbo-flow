@@ -218,21 +218,23 @@ class SimpleEncoder(nn.Module):
     k: int = 16  # neighbours
 
     @nn.compact
-    def __call__(self, latent_grid, coords, params):
-        # Pure JAX k-NN (avoids NumPy/Scikit-learn conversions that break under jit/vmap)
-        coords_xy = coords[..., :2]  # strip geometry parameters
-        dists = jnp.sum(
-            (latent_grid[:, None, :] - coords_xy[None, :, :]) ** 2, axis=-1
-        )  # (G,N)
-        idx = jnp.argsort(dists, axis=1)[:, : self.k]  # (G,k)
+    def __call__(self, latent_grid_point, coords, params):
+        # latent_grid_point: (2,), coords: (B, N, 3), params: (B, N, 3)
+        coords_xy = coords[..., :2]  # (B, N, 2)
 
-        neighbor_coords = coords_xy[idx]  # (G,k,2)
-        neighbor_params = params[idx]  # (G,k,3)
+        dists = jnp.sum((latent_grid_point - coords_xy) ** 2, axis=-1)  # (B, N)
+        idx = jnp.argsort(dists, axis=1)[:, : self.k]  # (B, k)
+
+        idx_expanded = jnp.expand_dims(idx, axis=2)
+        neighbor_coords = jnp.take_along_axis(coords, idx_expanded, axis=1)
+        neighbor_params = jnp.take_along_axis(params, idx_expanded, axis=1)
 
         mean_coords = jnp.mean(neighbor_coords, axis=1)
         mean_params = jnp.mean(neighbor_params, axis=1)
 
-        enc_inp = jnp.concatenate([latent_grid, mean_coords, mean_params], axis=-1)
+        latent_grid_b = jnp.broadcast_to(latent_grid_point, (coords.shape[0], 2))
+
+        enc_inp = jnp.concatenate([latent_grid_b, mean_coords[..., :2], mean_params], axis=-1)
         return MLP((128, 128, self.latent_dim))(enc_inp)
 
 
@@ -241,12 +243,14 @@ class SimpleDecoder(nn.Module):
 
     @nn.compact
     def __call__(self, query, latent_grid, latent_tokens):
-        # Pure JAX k-NN (distance only in x,y space)
-        query_xy = query[..., :2]
-        dists = jnp.sum((query_xy[None, :] - latent_grid) ** 2, axis=-1)  # (G,)
-        idx = jnp.argsort(dists)[: self.k]  # (k,)
+        # query: (N, 6), latent_grid: (G, 2), latent_tokens: (G, D)
+        query_xy = query[..., :2]  # (N, 2)
+        dists = jnp.sum((query_xy[:, None, :] - latent_grid[None, :, :]) ** 2, axis=-1)  # (N, G)
+        idx = jnp.argsort(dists, axis=1)[:, : self.k]  # (N, k)
 
-        mean_tokens = jnp.mean(latent_tokens[idx], axis=0)
+        neighbor_tokens = latent_tokens[idx]
+        mean_tokens = jnp.mean(neighbor_tokens, axis=1)
+
         dec_inp = jnp.concatenate([query, mean_tokens], axis=-1)
         return MLP((128, 128, 1))(dec_inp)
 
@@ -257,21 +261,27 @@ class ToyGAOT(nn.Module):
 
     @nn.compact
     def __call__(self, coords, params):
+        # coords: (B, N, 3), params: (B, N, 3)
         grid_1d = jnp.linspace(0.0, 1.0, self.grid_size)
         gx, gy = jnp.meshgrid(grid_1d, grid_1d)
-        latent_grid = jnp.stack([gx.ravel(), gy.ravel()], axis=-1)
+        latent_grid = jnp.stack([gx.ravel(), gy.ravel()], axis=-1) # (G, 2)
 
         encode = SimpleEncoder(self.latent_dim)
         decode = SimpleDecoder()
 
-        # Map over latent_grid only; coords/params stay the same
         latent_tokens = jax.vmap(encode, in_axes=(0, None, None))(
             latent_grid, coords, params
-        )
-        processed = MLP((self.latent_dim, self.latent_dim))(latent_tokens)
-        preds = jax.vmap(decode, in_axes=(0, None, None))(
-            coords, latent_grid, processed
-        )
+        ) # (G, B, D)
+
+        latent_tokens_p = jnp.transpose(latent_tokens, (1, 0, 2)) # (B, G, D)
+
+        processed = jax.vmap(MLP((self.latent_dim, self.latent_dim)))(latent_tokens_p) # (B, G, D)
+
+        query_points = jnp.concatenate([coords, params], axis=-1) # (B, N, 6)
+
+        preds = jax.vmap(decode, in_axes=(0, None, 0))(
+            query_points, latent_grid, processed
+        ) # (B, N, 1)
         return preds
 
 
@@ -286,16 +296,12 @@ def create_state(rng_key, model, lr, batch):
 
 
 @jax.jit
-def _loss_fn(params, apply_fn, coords, params_geom, sols):
-    preds = apply_fn({"params": params}, coords, params_geom)
-    return jnp.mean((preds - sols) ** 2)
-
-
-@jax.jit
 def _train_step(state, coords, params_geom, sols):
-    val, grads = jax.value_and_grad(_loss_fn)(
-        state.params, state.apply_fn, coords, params_geom, sols
-    )
+    def loss_fn(params):
+        preds = state.apply_fn({"params": params}, coords, params_geom)
+        return jnp.mean((preds - sols) ** 2)
+
+    val, grads = jax.value_and_grad(loss_fn)(state.params)
     return state.apply_gradients(grads=grads), val
 
 
